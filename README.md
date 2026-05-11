@@ -148,3 +148,6 @@ uv run mypy src
 ## License
 
 MIT. See `LICENSE`.
+## Source mirroring
+
+This repo is developed on Gitea at https://gitea.anigeek.com/Claw/homebox-mcp-server and auto-mirrored to GitHub via Gitea push-mirror (sync_on_commit). PRs against either remote are welcome; the Gitea side is primary.
