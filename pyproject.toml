@@ -25,8 +25,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://gitea.anigeek.com/Claw/homebox-mcp-server"
-Issues = "https://gitea.anigeek.com/Claw/homebox-mcp-server/issues"
+Homepage = "https://github.com/Nasawa/homebox-mcp-server"
+Issues = "https://github.com/Nasawa/homebox-mcp-server/issues"
+Source = "https://github.com/Nasawa/homebox-mcp-server"
 
 [project.scripts]
 homebox-mcp = "homebox_mcp.__main__:main"

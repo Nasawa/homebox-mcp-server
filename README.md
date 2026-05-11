@@ -136,7 +136,7 @@ markers persist exactly as written.
 ## Development
 
 ```bash
-git clone https://gitea.anigeek.com/Claw/homebox-mcp-server.git
+git clone https://github.com/Nasawa/homebox-mcp-server.git
 cd homebox-mcp-server
 uv sync --dev
 uv run pytest -v
