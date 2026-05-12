@@ -101,6 +101,6 @@ async def test_create_item_label_ids_go_on_post_not_put(client: HomeboxClient) -
 
     assert post_route.called
     post_body = post_route.calls[0].request.read().decode()
-    assert '"labelIds":["L1"]' in post_body
+    assert '"tagIds":["L1"]' in post_body
     assert not put_route.called
     await client.close()

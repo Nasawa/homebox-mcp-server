@@ -1,7 +1,12 @@
 """Body-shape rules for Homebox v0.25 item PUT/POST bodies.
 
 Homebox v0.25 silently drops fields whose name or format doesn't match the schema:
-* tag membership is set via ``labelIds`` (list of label UUIDs), NOT ``tags``
+* Tag membership is set via ``tagIds`` (list of tag UUIDs), NOT ``tags`` or
+  ``labelIds``. Empirically verified 2026-05-12 against running v0.25: the API
+  resource is ``/v1/tags`` (renamed from ``/v1/labels`` in an earlier point
+  release), items return a ``tags`` array of full tag objects on GET, and the
+  write field is ``tagIds`` on both POST and PUT. The "labelIds" name carried
+  forward from a pre-v0.25 postmortem was wrong — those PUTs silently dropped.
 * ``purchaseTime`` must be ``YYYY-MM-DD`` (not RFC3339)
 * The zero-date sentinel ``0001-01-01T00:00:00Z`` must be converted to an empty string
   before a PUT — otherwise the server rejects the body and the update silently fails
@@ -46,26 +51,31 @@ def _coerce_date(value: Any) -> Any:
 def normalize_item_body(body: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of *body* with Homebox v0.25 schema rules applied.
 
-    * ``tags`` (list of label objects/names) is renamed to ``labelIds`` (list of UUIDs)
-      if all entries look like UUIDs; otherwise it's dropped with no replacement and
-      the caller is expected to have passed ``labelIds`` directly.
+    * ``tags`` (list of tag objects from a GET response, OR list of UUID strings) is
+      promoted to ``tagIds`` (list of UUIDs) when entries look like UUIDs, OR
+      flattened from ``[{"id": "...", ...}]`` shape to ``[id, ...]``.
+    * ``labelIds`` (legacy from pre-v0.25 postmortems) is renamed to ``tagIds``.
     * ``purchaseTime`` is coerced via :func:`_coerce_date`.
     * Any other ``*Time`` / ``*Date`` field that looks date-shaped is coerced too.
     """
     out = dict(body)
 
-    # ``tags`` is never a valid Homebox v0.25 field name — always drop it.
-    # If labelIds isn't already present AND the tags values look like UUIDs,
-    # promote them to labelIds. Otherwise just drop the tags key.
+    # Legacy: rename labelIds → tagIds (the pre-v0.25 name).
+    if "labelIds" in out and "tagIds" not in out:
+        out["tagIds"] = out.pop("labelIds")
+    elif "labelIds" in out:
+        # Both present: caller is being explicit with tagIds, drop the legacy alias.
+        out.pop("labelIds")
+
+    # ``tags`` is the GET-response shape; on write we want ``tagIds``. Convert.
     if "tags" in out:
         tags = out.pop("tags")
-        if (
-            "labelIds" not in out
-            and isinstance(tags, list)
-            and tags
-            and all(isinstance(t, str) and len(t) == 36 and t.count("-") == 4 for t in tags)
-        ):
-            out["labelIds"] = tags
+        if "tagIds" not in out and isinstance(tags, list) and tags:
+            # Two accepted shapes: list of UUID strings, or list of {id: ...} dicts.
+            if all(isinstance(t, str) and len(t) == 36 and t.count("-") == 4 for t in tags):
+                out["tagIds"] = tags
+            elif all(isinstance(t, dict) and t.get("id") for t in tags):
+                out["tagIds"] = [t["id"] for t in tags]
 
     # purchaseTime is the dominant case
     if "purchaseTime" in out:

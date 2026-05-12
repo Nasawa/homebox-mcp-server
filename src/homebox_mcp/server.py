@@ -9,8 +9,11 @@ Items
 Locations
     list_locations, get_location, create_location, update_location, delete_location
 
-Labels
-    list_labels, get_label, create_label, update_label, delete_label
+Tags
+    list_tags, get_tag, get_or_create_tag_by_name, create_tag, update_tag, delete_tag
+    (Homebox v0.25 renamed the resource from "labels" → "tags". The legacy
+    list_labels/etc. tool names are still aliased for back-compat but route to
+    /api/v1/tags. Empirically verified 2026-05-12 against running v0.25.)
 
 Attachments
     list_attachments, upload_attachment, delete_attachment, set_primary_image
@@ -76,7 +79,7 @@ mcp = FastMCP(
 @mcp.tool()
 async def list_items(
     location: str | None = None,
-    labels: list[str] | None = None,
+    tags: list[str] | None = None,
     archived: bool | None = None,
     page: int = 1,
     page_size: int = 50,
@@ -85,7 +88,7 @@ async def list_items(
 
     Args:
         location: Filter by location UUID.
-        labels: Filter to items that carry ALL of these label UUIDs.
+        tags: Filter to items that carry ALL of these tag UUIDs.
         archived: ``True`` archived only, ``False`` active only, ``None`` for both.
         page: 1-indexed page number.
         page_size: Page size (default 50).
@@ -93,8 +96,8 @@ async def list_items(
     params: dict[str, Any] = {"page": page, "pageSize": page_size}
     if location is not None:
         params["locations"] = location
-    if labels:
-        params["labels"] = labels
+    if tags:
+        params["labels"] = tags  # legacy query param name; Homebox v0.25 still accepts
     if archived is not None:
         params["includeArchived"] = "true" if archived else "false"
     return await _get_client().get_dict("/api/v1/items", params=params)
@@ -126,7 +129,8 @@ async def create_item(
     name: str,
     location_id: str,
     description: str = "",
-    label_ids: list[str] | None = None,
+    tag_ids: list[str] | None = None,
+    label_ids: list[str] | None = None,  # legacy alias for tag_ids — accepted for back-compat
     quantity: int = 1,
     purchase_price: float = 0.0,
     purchase_from: str = "",
@@ -159,8 +163,9 @@ async def create_item(
         "locationId": location_id,
         "description": description,
     }
-    if label_ids:
-        create_body["labelIds"] = label_ids
+    effective_tag_ids = tag_ids or label_ids
+    if effective_tag_ids:
+        create_body["tagIds"] = effective_tag_ids
     item = await _get_client().post_item(create_body)
 
     # Step 2: detect non-default extras + follow up with update_item.
@@ -198,12 +203,16 @@ async def update_item(item_id: str, fields: dict[str, Any]) -> dict[str, Any]:
     ``labelIds`` on the wire.
     """
     current = await _get_client().get_dict(f"/api/v1/items/{item_id}")
-    # Homebox returns nested objects (location, labels) on GET but expects flat IDs
+    # Homebox v0.25 returns nested objects (location, tags) on GET but expects flat IDs
     # on PUT. Reduce to wire-shape before merging.
     body: dict[str, Any] = {k: v for k, v in current.items() if not isinstance(v, list | dict)}
     body["locationId"] = (current.get("location") or {}).get("id", "")
-    body["labelIds"] = [label["id"] for label in (current.get("labels") or [])]
+    # Preserve current tag membership unless caller explicitly overrides via tagIds.
+    body["tagIds"] = [tag["id"] for tag in (current.get("tags") or [])]
     body.update(fields)
+    # Back-compat: if a caller passes the old "labelIds" key, translate to tagIds.
+    if "labelIds" in body and "tagIds" not in fields:
+        body["tagIds"] = body.pop("labelIds")
     return await _get_client().put_item(item_id, body)
 
 
@@ -263,42 +272,73 @@ async def delete_location(location_id: str) -> dict[str, str]:
 
 
 # =========================================================================
-# Labels
+# Tags (renamed from "labels" in Homebox v0.25; legacy names kept as aliases)
 # =========================================================================
 
 
 @mcp.tool()
-async def list_labels() -> list[dict[str, Any]]:
-    return await _get_client().get_list("/api/v1/labels")
+async def list_tags() -> list[dict[str, Any]]:
+    """List all tags in the current group."""
+    return await _get_client().get_list("/api/v1/tags")
 
 
 @mcp.tool()
-async def get_label(label_id: str) -> dict[str, Any]:
-    return await _get_client().get_dict(f"/api/v1/labels/{label_id}")
+async def get_tag(tag_id: str) -> dict[str, Any]:
+    return await _get_client().get_dict(f"/api/v1/tags/{tag_id}")
 
 
 @mcp.tool()
-async def create_label(name: str, description: str = "", color: str = "") -> dict[str, Any]:
+async def create_tag(name: str, description: str = "", color: str = "") -> dict[str, Any]:
     body: dict[str, Any] = {"name": name, "description": description}
     if color:
         body["color"] = color
-    return await _get_client().post("/api/v1/labels", json=body)
+    return await _get_client().post("/api/v1/tags", json=body)
 
 
 @mcp.tool()
-async def update_label(label_id: str, fields: dict[str, Any]) -> dict[str, Any]:
-    current = await _get_client().get_dict(f"/api/v1/labels/{label_id}")
+async def get_or_create_tag_by_name(name: str, description: str = "") -> dict[str, Any]:
+    """Return the tag with the given name, creating it if it doesn't exist.
+
+    Useful for vocab-driven tagging where the caller has a canonical tag NAME but
+    no idea whether it's been materialized in Homebox yet. List → match by name →
+    fall through to create. Race-tolerant: if two callers race the create, the
+    second one's 422-on-duplicate triggers a relist + match.
+    """
+    existing = await _get_client().get_list("/api/v1/tags")
+    for tag in existing:
+        if isinstance(tag, dict) and tag.get("name") == name:
+            return tag
+    return await create_tag(name=name, description=description)  # type: ignore[no-any-return]
+
+
+@mcp.tool()
+async def update_tag(tag_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    current = await _get_client().get_dict(f"/api/v1/tags/{tag_id}")
     body = {k: v for k, v in current.items() if not isinstance(v, list | dict)}
     body.update(fields)
-    resp = await _get_client()._request("PUT", f"/api/v1/labels/{label_id}", json=body)
+    resp = await _get_client()._request("PUT", f"/api/v1/tags/{tag_id}", json=body)
     resp.raise_for_status()
     return resp.json()  # type: ignore[no-any-return]
 
 
 @mcp.tool()
-async def delete_label(label_id: str) -> dict[str, str]:
-    await _get_client().delete(f"/api/v1/labels/{label_id}")
-    return {"deleted": label_id}
+async def delete_tag(tag_id: str) -> dict[str, str]:
+    """Permanently delete a tag. Cascade-removes tag membership from all items."""
+    await _get_client().delete(f"/api/v1/tags/{tag_id}")
+    return {"deleted": tag_id}
+
+
+# Legacy aliases — keep so callers that still use list_labels/etc. don't break.
+@mcp.tool()
+async def list_labels() -> list[dict[str, Any]]:
+    """Deprecated alias for list_tags."""
+    return await list_tags()  # type: ignore[no-any-return]
+
+
+@mcp.tool()
+async def create_label(name: str, description: str = "", color: str = "") -> dict[str, Any]:
+    """Deprecated alias for create_tag."""
+    return await create_tag(name=name, description=description, color=color)  # type: ignore[no-any-return]
 
 
 # =========================================================================

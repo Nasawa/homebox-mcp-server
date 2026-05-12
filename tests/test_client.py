@@ -74,7 +74,7 @@ async def test_put_item_normalizes_body(client: HomeboxClient) -> None:
             "name": "Foo",
             "purchaseTime": "2026-05-10T18:47:00Z",  # → 2026-05-10
             "soldTime": "0001-01-01T00:00:00Z",  # → ""
-            "tags": [  # → labelIds
+            "tags": [  # → tagIds (Homebox v0.25 wire field; "labelIds" was the pre-rename name)
                 "11111111-1111-1111-1111-111111111111",
             ],
         },
@@ -83,8 +83,9 @@ async def test_put_item_normalizes_body(client: HomeboxClient) -> None:
     assert isinstance(body, dict)
     assert body["purchaseTime"] == "2026-05-10"
     assert body["soldTime"] == ""
-    assert body["labelIds"] == ["11111111-1111-1111-1111-111111111111"]
+    assert body["tagIds"] == ["11111111-1111-1111-1111-111111111111"]
     assert "tags" not in body
+    assert "labelIds" not in body
     await client.close()
 
 
