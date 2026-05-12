@@ -142,23 +142,50 @@ async def create_item(
     accepts either ``YYYY-MM-DD`` or RFC3339 (truncated to date), zero-date
     sentinels are converted to empty string, ``label_ids`` becomes the wire
     field ``labelIds``.
+
+    Homebox v0.25's ``POST /api/v1/items`` endpoint **only accepts**
+    ``name``, ``description``, ``locationId``, and ``labelIds``. All other
+    fields (purchase*, manufacturer, modelNumber, serialNumber, notes) are
+    silently dropped on POST and must be set via a follow-up PUT. To hide
+    that two-step from callers, this tool issues the create first, then
+    auto-follows with ``update_item`` when any of the extras were provided
+    as non-default. Discovered empirically 2026-05-12 — verified that the
+    normalizer fix isn't sufficient because this is endpoint-scope, not
+    format.
     """
-    body: dict[str, Any] = {
+    # Step 1: minimal POST body (the endpoint-accepted subset).
+    create_body: dict[str, Any] = {
         "name": name,
         "locationId": location_id,
         "description": description,
-        "quantity": quantity,
-        "purchasePrice": purchase_price,
-        "purchaseFrom": purchase_from,
-        "purchaseTime": purchase_time,
-        "serialNumber": serial_number,
-        "manufacturer": manufacturer,
-        "modelNumber": model_number,
-        "notes": notes,
     }
     if label_ids:
-        body["labelIds"] = label_ids
-    return await _get_client().post_item(body)
+        create_body["labelIds"] = label_ids
+    item = await _get_client().post_item(create_body)
+
+    # Step 2: detect non-default extras + follow up with update_item.
+    extras: dict[str, Any] = {}
+    if quantity != 1:
+        extras["quantity"] = quantity
+    if purchase_price not in (0.0, 0):
+        extras["purchasePrice"] = purchase_price
+    if purchase_from:
+        extras["purchaseFrom"] = purchase_from
+    if purchase_time:
+        extras["purchaseTime"] = purchase_time
+    if serial_number:
+        extras["serialNumber"] = serial_number
+    if manufacturer:
+        extras["manufacturer"] = manufacturer
+    if model_number:
+        extras["modelNumber"] = model_number
+    if notes:
+        extras["notes"] = notes
+
+    if extras and item.get("id"):
+        item = await update_item(item["id"], extras)
+
+    return item
 
 
 @mcp.tool()
