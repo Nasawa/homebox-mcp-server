@@ -19,9 +19,9 @@ def client() -> HomeboxClient:
 @respx.mock
 async def test_login_succeeds_on_first_call(client: HomeboxClient) -> None:
     respx.post(f"{BASE}/api/v1/users/login").mock(return_value=httpx.Response(200, json={"token": "abc123"}))
-    respx.get(f"{BASE}/api/v1/labels").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{BASE}/api/v1/tags").mock(return_value=httpx.Response(200, json=[]))
 
-    result = await client.get("/api/v1/labels")
+    result = await client.get("/api/v1/tags")
     assert result == []
     await client.close()
 
@@ -30,7 +30,7 @@ async def test_login_succeeds_on_first_call(client: HomeboxClient) -> None:
 async def test_login_failure_raises_auth_error(client: HomeboxClient) -> None:
     respx.post(f"{BASE}/api/v1/users/login").mock(return_value=httpx.Response(401, text="bad password"))
     with pytest.raises(HomeboxAuthError):
-        await client.get("/api/v1/labels")
+        await client.get("/api/v1/tags")
     await client.close()
 
 
@@ -43,13 +43,13 @@ async def test_401_triggers_relogin_and_retry(client: HomeboxClient) -> None:
         ]
     )
     # First request 401, second succeeds.
-    respx.get(f"{BASE}/api/v1/items").mock(
+    respx.get(f"{BASE}/api/v1/entities").mock(
         side_effect=[
             httpx.Response(401, text="token expired"),
             httpx.Response(200, json={"items": []}),
         ]
     )
-    result = await client.get("/api/v1/items")
+    result = await client.get("/api/v1/entities")
     assert result == {"items": []}
     assert login_route.call_count == 2
     await client.close()
@@ -66,26 +66,28 @@ async def test_put_item_normalizes_body(client: HomeboxClient) -> None:
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, json={"id": "deadbeef-...", "name": "Foo"})
 
-    respx.put(f"{BASE}/api/v1/items/deadbeef").mock(side_effect=_capture)
+    respx.put(f"{BASE}/api/v1/entities/deadbeef").mock(side_effect=_capture)
 
     await client.put_item(
         "deadbeef",
         {
             "name": "Foo",
-            "purchaseTime": "2026-05-10T18:47:00Z",  # → 2026-05-10
-            "soldTime": "0001-01-01T00:00:00Z",  # → ""
-            "tags": [  # → tagIds (Homebox v0.25 wire field; "labelIds" was the pre-rename name)
+            "purchaseTime": "2026-05-10T18:47:00Z",  # -> purchaseDate 2026-05-10
+            "soldTime": "0001-01-01T00:00:00Z",  # -> soldDate ""
+            "tags": [  # -> tagIds
                 "11111111-1111-1111-1111-111111111111",
             ],
         },
     )
     body = captured["body"]
     assert isinstance(body, dict)
-    assert body["purchaseTime"] == "2026-05-10"
-    assert body["soldTime"] == ""
+    assert body["purchaseDate"] == "2026-05-10"
+    assert body["soldDate"] == ""
     assert body["tagIds"] == ["11111111-1111-1111-1111-111111111111"]
     assert "tags" not in body
     assert "labelIds" not in body
+    assert "purchaseTime" not in body
+    assert "soldTime" not in body
     await client.close()
 
 

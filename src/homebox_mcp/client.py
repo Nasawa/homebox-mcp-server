@@ -5,7 +5,7 @@ receive a token, send it as ``Authorization: <token>`` on subsequent calls (note
 ``Bearer`` prefix — Homebox uses the bare token string).
 
 This client handles login on first use, retries once on 401 with a fresh login, and
-normalizes Item PUT/POST bodies via :func:`homebox_mcp.normalizer.normalize_item_body`.
+normalizes Entity PUT/POST bodies via :func:`homebox_mcp.normalizer.normalize_entity_body`.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from .normalizer import normalize_item_body
+from .normalizer import normalize_entity_body
 
 
 class HomeboxAuthError(RuntimeError):
@@ -23,7 +23,7 @@ class HomeboxAuthError(RuntimeError):
 
 
 class HomeboxClient:
-    """Minimal authenticated HTTP client for Homebox v0.25.
+    """Minimal authenticated HTTP client for Homebox v0.26.
 
     Parameters
     ----------
@@ -134,7 +134,7 @@ class HomeboxClient:
         return result
 
     async def get_list(self, path: str, *, params: dict[str, Any] | None = None) -> list[Any]:
-        """GET endpoints that return a JSON array (e.g. /locations, /labels)."""
+        """GET endpoints that return a JSON array (e.g. /tags, /entity-types)."""
         result = await self.get(path, params=params)
         if not isinstance(result, list):
             raise TypeError(f"Expected JSON array at {path}, got {type(result).__name__}")
@@ -153,21 +153,29 @@ class HomeboxClient:
         result: dict[str, Any] = resp.json()
         return result
 
-    async def put_item(self, item_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        """PUT an Item body with normalization applied. Use this for ANY item update."""
-        normalized = normalize_item_body(body)
-        resp = await self._request("PUT", f"/api/v1/items/{item_id}", json=normalized)
+    async def put_entity(self, entity_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """PUT an Entity body with normalization applied. Use this for ANY entity update."""
+        normalized = normalize_entity_body(body)
+        resp = await self._request("PUT", f"/api/v1/entities/{entity_id}", json=normalized)
         resp.raise_for_status()
         result: dict[str, Any] = resp.json()
         return result
 
-    async def post_item(self, body: dict[str, Any]) -> dict[str, Any]:
-        """POST a new Item with normalization applied."""
-        normalized = normalize_item_body(body)
-        resp = await self._request("POST", "/api/v1/items", json=normalized)
+    async def post_entity(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST a new Entity with normalization applied."""
+        normalized = normalize_entity_body(body)
+        resp = await self._request("POST", "/api/v1/entities", json=normalized)
         resp.raise_for_status()
         result: dict[str, Any] = resp.json()
         return result
+
+    async def put_item(self, item_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Deprecated compatibility wrapper for entity updates."""
+        return await self.put_entity(item_id, body)
+
+    async def post_item(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Deprecated compatibility wrapper for entity creates."""
+        return await self.post_entity(body)
 
     async def delete(self, path: str) -> None:
         resp = await self._request("DELETE", path)
