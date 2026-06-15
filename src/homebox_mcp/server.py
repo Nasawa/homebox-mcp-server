@@ -11,15 +11,18 @@ Locations
 
 Tags
     list_tags, get_tag, get_or_create_tag_by_name, create_tag, update_tag, delete_tag
-    (Homebox v0.25 renamed the resource from "labels" → "tags". The legacy
-    list_labels/etc. tool names are still aliased for back-compat but route to
-    /api/v1/tags. Empirically verified 2026-05-12 against running v0.25.)
+    (The legacy list_labels/create_label tool names are still aliased for
+    back-compat but route to /api/v1/tags.)
 
 Attachments
-    list_attachments, upload_attachment, delete_attachment, set_primary_image
+    list_attachments, upload_attachment, create_external_attachment, delete_attachment,
+    set_primary_image
 
 Codes
     get_qrcode, get_asset_label_image
+
+Entity Types
+    list_entity_types
 """
 
 from __future__ import annotations
@@ -65,8 +68,8 @@ mcp = FastMCP(
     "Homebox MCP",
     instructions=(
         "MCP server for the Homebox (sysadminsmedia/homebox) inventory management system. "
-        "All item update/create operations are normalized to satisfy Homebox v0.25 "
-        "schema rules (tagIds vs tags, YYYY-MM-DD purchaseTime, zero-date sentinels)."
+        "All item/location update/create operations are normalized to satisfy Homebox v0.26 "
+        "schema rules (entityTypeId, tagIds vs tags, YYYY-MM-DD purchaseDate/soldDate, zero-date sentinels)."
     ),
 )
 
@@ -95,18 +98,19 @@ async def list_items(
     """
     params: dict[str, Any] = {"page": page, "pageSize": page_size}
     if location is not None:
-        params["locations"] = location
+        params["parentIds"] = location
     if tags:
-        params["labels"] = tags  # legacy query param name; Homebox v0.25 still accepts
+        params["tags"] = tags
     if archived is not None:
         params["includeArchived"] = "true" if archived else "false"
-    return await _get_client().get_dict("/api/v1/items", params=params)
+    params["isLocation"] = "false"
+    return await _get_client().get_dict("/api/v1/entities", params=params)
 
 
 @mcp.tool()
 async def get_item(item_id: str) -> dict[str, Any]:
     """Get a single item by UUID, including full notes + attachment metadata."""
-    return await _get_client().get_dict(f"/api/v1/items/{item_id}")
+    return await _get_client().get_dict(f"/api/v1/entities/{item_id}")
 
 
 @mcp.tool()
@@ -119,8 +123,8 @@ async def get_item_by_asset_id(asset_id: str) -> dict[str, Any]:
 async def search_items(query: str, page: int = 1, page_size: int = 50) -> dict[str, Any]:
     """Free-text search across items (name, description, notes)."""
     return await _get_client().get_dict(
-        "/api/v1/items",
-        params={"q": query, "page": page, "pageSize": page_size},
+        "/api/v1/entities",
+        params={"q": query, "page": page, "pageSize": page_size, "isLocation": "false"},
     )
 
 
@@ -128,12 +132,14 @@ async def search_items(query: str, page: int = 1, page_size: int = 50) -> dict[s
 async def create_item(
     name: str,
     location_id: str,
+    entity_type_id: str = "",
     description: str = "",
     tag_ids: list[str] | None = None,
     label_ids: list[str] | None = None,  # legacy alias for tag_ids — accepted for back-compat
     quantity: int = 1,
     purchase_price: float = 0.0,
     purchase_from: str = "",
+    purchase_date: str = "",
     purchase_time: str = "",
     serial_number: str = "",
     manufacturer: str = "",
@@ -142,42 +148,33 @@ async def create_item(
 ) -> dict[str, Any]:
     """Create a new item.
 
-    The body is normalized through the Homebox v0.25 rules: ``purchase_time``
-    accepts either ``YYYY-MM-DD`` or RFC3339 (truncated to date), zero-date
-    sentinels are converted to empty string, ``label_ids`` becomes the wire
-    field ``labelIds``.
-
-    Homebox v0.25's ``POST /api/v1/items`` endpoint **only accepts**
-    ``name``, ``description``, ``locationId``, and ``labelIds``. All other
-    fields (purchase*, manufacturer, modelNumber, serialNumber, notes) are
-    silently dropped on POST and must be set via a follow-up PUT. To hide
-    that two-step from callers, this tool issues the create first, then
-    auto-follows with ``update_item`` when any of the extras were provided
-    as non-default. Discovered empirically 2026-05-12 — verified that the
-    normalizer fix isn't sufficient because this is endpoint-scope, not
-    format.
+    The body is normalized through the Homebox v0.26 entity rules:
+    ``purchase_date`` accepts either ``YYYY-MM-DD`` or RFC3339 (truncated to
+    date), zero-date sentinels are converted to empty string, and legacy
+    ``label_ids`` becomes the wire field ``tagIds``.
     """
-    # Step 1: minimal POST body (the endpoint-accepted subset).
     create_body: dict[str, Any] = {
         "name": name,
-        "locationId": location_id,
+        "parentId": location_id,
         "description": description,
+        "quantity": quantity,
     }
+    if entity_type_id:
+        create_body["entityTypeId"] = entity_type_id
     effective_tag_ids = tag_ids or label_ids
     if effective_tag_ids:
         create_body["tagIds"] = effective_tag_ids
-    item = await _get_client().post_item(create_body)
+    item = await _get_client().post_entity(create_body)
 
-    # Step 2: detect non-default extras + follow up with update_item.
+    # EntityCreate accepts only the basic shape. Follow up with PUT for the richer fields.
     extras: dict[str, Any] = {}
-    if quantity != 1:
-        extras["quantity"] = quantity
     if purchase_price not in (0.0, 0):
         extras["purchasePrice"] = purchase_price
     if purchase_from:
         extras["purchaseFrom"] = purchase_from
-    if purchase_time:
-        extras["purchaseTime"] = purchase_time
+    effective_purchase_date = purchase_date or purchase_time
+    if effective_purchase_date:
+        extras["purchaseDate"] = effective_purchase_date
     if serial_number:
         extras["serialNumber"] = serial_number
     if manufacturer:
@@ -198,28 +195,32 @@ async def update_item(item_id: str, fields: dict[str, Any]) -> dict[str, Any]:
     """Update an existing item.
 
     *fields* is merged into the existing item before PUT, so callers can pass only
-    the keys they want to change. The merged body is normalized via the Homebox v0.25
-    rules so ``purchaseTime`` is always ``YYYY-MM-DD`` and label membership uses
-    ``labelIds`` on the wire.
+    the keys they want to change. The merged body is normalized via the Homebox v0.26
+    rules so date fields are always ``YYYY-MM-DD`` and tag membership uses
+    ``tagIds`` on the wire.
     """
-    current = await _get_client().get_dict(f"/api/v1/items/{item_id}")
-    # Homebox v0.25 returns nested objects (location, tags) on GET but expects flat IDs
+    current = await _get_client().get_dict(f"/api/v1/entities/{item_id}")
+    # Homebox returns nested objects (parent, entityType, tags) on GET but expects flat IDs
     # on PUT. Reduce to wire-shape before merging.
     body: dict[str, Any] = {k: v for k, v in current.items() if not isinstance(v, list | dict)}
-    body["locationId"] = (current.get("location") or {}).get("id", "")
+    body["parentId"] = (current.get("parent") or {}).get("id", "")
+    if (current.get("entityType") or {}).get("id"):
+        body["entityTypeId"] = current["entityType"]["id"]
     # Preserve current tag membership unless caller explicitly overrides via tagIds.
     body["tagIds"] = [tag["id"] for tag in (current.get("tags") or [])]
     body.update(fields)
+    if "locationId" in body and "parentId" not in fields:
+        body["parentId"] = body.pop("locationId")
     # Back-compat: if a caller passes the old "labelIds" key, translate to tagIds.
     if "labelIds" in body and "tagIds" not in fields:
         body["tagIds"] = body.pop("labelIds")
-    return await _get_client().put_item(item_id, body)
+    return await _get_client().put_entity(item_id, body)
 
 
 @mcp.tool()
 async def delete_item(item_id: str) -> dict[str, str]:
     """Permanently delete an item."""
-    await _get_client().delete(f"/api/v1/items/{item_id}")
+    await _get_client().delete(f"/api/v1/entities/{item_id}")
     return {"deleted": item_id}
 
 
@@ -230,22 +231,39 @@ async def delete_item(item_id: str) -> dict[str, str]:
 
 @mcp.tool()
 async def list_locations() -> list[dict[str, Any]]:
-    """List all locations (flat). Use ``get_location`` for nested children."""
-    return await _get_client().get_list("/api/v1/locations")
+    """List all locations (flat). Use ``get_locations_tree`` for nested children."""
+    result = await _get_client().get_dict("/api/v1/entities", params={"isLocation": "true"})
+    items = result.get("items", [])
+    return items if isinstance(items, list) else []
+
+
+@mcp.tool()
+async def get_locations_tree(with_items: bool = False) -> list[dict[str, Any]]:
+    """Get the nested Homebox location tree."""
+    return await _get_client().get_list(
+        "/api/v1/entities/tree",
+        params={"withItems": "true" if with_items else "false"},
+    )
 
 
 @mcp.tool()
 async def get_location(location_id: str) -> dict[str, Any]:
     """Get one location by UUID, including children and items."""
-    return await _get_client().get_dict(f"/api/v1/locations/{location_id}")
+    return await _get_client().get_dict(f"/api/v1/entities/{location_id}")
 
 
 @mcp.tool()
-async def create_location(name: str, description: str = "", parent_id: str = "") -> dict[str, Any]:
+async def create_location(
+    name: str,
+    entity_type_id: str,
+    description: str = "",
+    parent_id: str = "",
+) -> dict[str, Any]:
     body: dict[str, Any] = {"name": name, "description": description}
+    body["entityTypeId"] = entity_type_id
     if parent_id:
         body["parentId"] = parent_id
-    return await _get_client().post("/api/v1/locations", json=body)
+    return await _get_client().post_entity(body)
 
 
 @mcp.tool()
@@ -254,25 +272,36 @@ async def update_location(
     fields: dict[str, Any],
 ) -> dict[str, Any]:
     """Update a location. *fields* is merged onto the current state before PUT."""
-    current = await _get_client().get_dict(f"/api/v1/locations/{location_id}")
+    current = await _get_client().get_dict(f"/api/v1/entities/{location_id}")
     body = {k: v for k, v in current.items() if not isinstance(v, list | dict)}
     if (current.get("parent") or {}).get("id"):
         body["parentId"] = current["parent"]["id"]
+    if (current.get("entityType") or {}).get("id"):
+        body["entityTypeId"] = current["entityType"]["id"]
     body.update(fields)
-    resp = await _get_client()._request("PUT", f"/api/v1/locations/{location_id}", json=body)
-    resp.raise_for_status()
-    return resp.json()  # type: ignore[no-any-return]
+    return await _get_client().put_entity(location_id, body)
 
 
 @mcp.tool()
 async def delete_location(location_id: str) -> dict[str, str]:
     """Delete a location. Will fail if the location still contains items or children."""
-    await _get_client().delete(f"/api/v1/locations/{location_id}")
+    await _get_client().delete(f"/api/v1/entities/{location_id}")
     return {"deleted": location_id}
 
 
 # =========================================================================
-# Tags (renamed from "labels" in Homebox v0.25; legacy names kept as aliases)
+# Entity Types
+# =========================================================================
+
+
+@mcp.tool()
+async def list_entity_types() -> list[dict[str, Any]]:
+    """List Homebox entity types, including which types are locations."""
+    return await _get_client().get_list("/api/v1/entity-types")
+
+
+# =========================================================================
+# Tags (legacy "labels" aliases kept for older MCP clients)
 # =========================================================================
 
 
@@ -349,7 +378,7 @@ async def create_label(name: str, description: str = "", color: str = "") -> dic
 @mcp.tool()
 async def list_attachments(item_id: str) -> list[dict[str, Any]]:
     """List attachments on an item (each entry includes id, type, primary flag, doc info)."""
-    item = await _get_client().get_dict(f"/api/v1/items/{item_id}")
+    item = await _get_client().get_dict(f"/api/v1/entities/{item_id}")
     attachments = item.get("attachments", [])
     return attachments if isinstance(attachments, list) else []
 
@@ -381,13 +410,31 @@ async def upload_attachment(
     content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     files = {"file": (filename, data, content_type)}
     form: dict[str, Any] = {"type": attachment_type, "name": filename}
-    return await _get_client().upload_multipart(f"/api/v1/items/{item_id}/attachments", files=files, data=form)
+    return await _get_client().upload_multipart(f"/api/v1/entities/{item_id}/attachments", files=files, data=form)
+
+
+@mcp.tool()
+async def create_external_attachment(
+    item_id: str,
+    external_id: str,
+    source_type: str,
+    title: str,
+    attachment_type: str = "attachment",
+) -> dict[str, Any]:
+    """Link an entity to an external document or URL without uploading file bytes."""
+    body = {
+        "external_id": external_id,
+        "source_type": source_type,
+        "title": title,
+        "attachment_type": attachment_type,
+    }
+    return await _get_client().post(f"/api/v1/entities/{item_id}/attachments/external", json=body)
 
 
 @mcp.tool()
 async def delete_attachment(item_id: str, attachment_id: str) -> dict[str, str]:
     """Delete an attachment from an item."""
-    await _get_client().delete(f"/api/v1/items/{item_id}/attachments/{attachment_id}")
+    await _get_client().delete(f"/api/v1/entities/{item_id}/attachments/{attachment_id}")
     return {"deleted": attachment_id}
 
 
@@ -399,7 +446,7 @@ async def set_primary_image(item_id: str, attachment_id: str) -> dict[str, Any]:
     """
     resp = await _get_client()._request(
         "PUT",
-        f"/api/v1/items/{item_id}/attachments/{attachment_id}",
+        f"/api/v1/entities/{item_id}/attachments/{attachment_id}",
         json={"primary": True, "type": "photo"},
     )
     resp.raise_for_status()

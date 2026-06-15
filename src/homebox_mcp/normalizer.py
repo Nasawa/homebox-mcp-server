@@ -1,19 +1,18 @@
-"""Body-shape rules for Homebox v0.25 item PUT/POST bodies.
+"""Body-shape rules for Homebox v0.26 entity PUT/POST bodies.
 
-Homebox v0.25 silently drops fields whose name or format doesn't match the schema:
+Homebox silently drops fields whose name or format doesn't match the schema:
 * Tag membership is set via ``tagIds`` (list of tag UUIDs), NOT ``tags`` or
-  ``labelIds``. Empirically verified 2026-05-12 against running v0.25: the API
-  resource is ``/v1/tags`` (renamed from ``/v1/labels`` in an earlier point
-  release), items return a ``tags`` array of full tag objects on GET, and the
-  write field is ``tagIds`` on both POST and PUT. The "labelIds" name carried
-  forward from a pre-v0.25 postmortem was wrong — those PUTs silently dropped.
-* ``purchaseTime`` must be ``YYYY-MM-DD`` (not RFC3339)
+  ``labelIds``. Entities return a ``tags`` array of full tag objects on GET,
+  and the write field is ``tagIds`` on both POST and PUT.
+* v0.26 renamed ``purchaseTime`` to ``purchaseDate`` and ``soldTime`` to
+  ``soldDate``. Dates must be ``YYYY-MM-DD`` (not RFC3339).
 * The zero-date sentinel ``0001-01-01T00:00:00Z`` must be converted to an empty string
-  before a PUT — otherwise the server rejects the body and the update silently fails
+  before a PUT. This applies to ``purchaseDate``, ``soldDate``, and
+  ``warrantyExpires``.
 
 These rules live HERE, in one function, so individual tool implementations can never
-re-violate them. Every Item-shaped body that travels to Homebox passes through
-:func:`normalize_item_body` first.
+re-violate them. Every entity-shaped body that travels to Homebox passes through
+:func:`normalize_entity_body` first.
 """
 
 from __future__ import annotations
@@ -48,14 +47,15 @@ def _coerce_date(value: Any) -> Any:
     return value
 
 
-def normalize_item_body(body: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of *body* with Homebox v0.25 schema rules applied.
+def normalize_entity_body(body: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of *body* with Homebox v0.26 schema rules applied.
 
     * ``tags`` (list of tag objects from a GET response, OR list of UUID strings) is
       promoted to ``tagIds`` (list of UUIDs) when entries look like UUIDs, OR
       flattened from ``[{"id": "...", ...}]`` shape to ``[id, ...]``.
     * ``labelIds`` (legacy from pre-v0.25 postmortems) is renamed to ``tagIds``.
-    * ``purchaseTime`` is coerced via :func:`_coerce_date`.
+    * ``purchaseTime``/``soldTime`` are renamed to ``purchaseDate``/``soldDate``.
+    * Date fields are coerced via :func:`_coerce_date`.
     * Any other ``*Time`` / ``*Date`` field that looks date-shaped is coerced too.
     """
     out = dict(body)
@@ -77,17 +77,32 @@ def normalize_item_body(body: dict[str, Any]) -> dict[str, Any]:
             elif all(isinstance(t, dict) and t.get("id") for t in tags):
                 out["tagIds"] = [t["id"] for t in tags]
 
-    # purchaseTime is the dominant case
-    if "purchaseTime" in out:
-        out["purchaseTime"] = _coerce_date(out["purchaseTime"])
+    # v0.26 wire names. Keep legacy aliases accepted at the MCP boundary.
+    if "purchaseTime" in out and "purchaseDate" not in out:
+        out["purchaseDate"] = out.pop("purchaseTime")
+    else:
+        out.pop("purchaseTime", None)
+
+    if "soldTime" in out and "soldDate" not in out:
+        out["soldDate"] = out.pop("soldTime")
+    else:
+        out.pop("soldTime", None)
+
+    if "warrantyExpireDate" in out and "warrantyExpires" not in out:
+        out["warrantyExpires"] = out.pop("warrantyExpireDate")
+    else:
+        out.pop("warrantyExpireDate", None)
 
     # Any remaining *Time / *Date keys
     for key, value in list(out.items()):
-        if key == "purchaseTime":
-            continue
-        if (key.endswith("Time") or key.endswith("Date")) and isinstance(value, str):
+        if (key.endswith("Time") or key.endswith("Date") or key == "warrantyExpires") and isinstance(value, str):
             coerced = _coerce_date(value)
             if coerced != value:
                 out[key] = coerced
 
     return out
+
+
+def normalize_item_body(body: dict[str, Any]) -> dict[str, Any]:
+    """Deprecated compatibility wrapper for entity body normalization."""
+    return normalize_entity_body(body)

@@ -4,14 +4,15 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for
 [Homebox](https://github.com/sysadminsmedia/homebox) — the open-source
 inventory management system for home users.
 
-Exposes ~22 tools across items, locations, labels, attachments, and QR-code /
-label-image generation. Item create/update bodies are normalized to satisfy
-Homebox v0.25 schema rules (`labelIds` vs `tags`, `YYYY-MM-DD` `purchaseTime`,
-zero-date sentinels) so the silent-PUT trap can't bite callers.
+Exposes tools across items, locations, tags, entity types, attachments, and
+QR-code / label-image generation. Entity create/update bodies are normalized
+to satisfy Homebox v0.26 schema rules (`entityTypeId`, `tagIds` vs `tags`,
+`YYYY-MM-DD` `purchaseDate` / `soldDate`, zero-date sentinels) so schema
+drift can't bite callers.
 
 ## Status
 
-**Alpha (v0.1.0).** Tested against Homebox v0.25.0. Unit tests cover the
+**Alpha (v0.1.0).** Tested against Homebox v0.26.2. Unit tests cover the
 normalizer + client; tool integration tests require a live Homebox instance
 and are not included.
 
@@ -38,7 +39,7 @@ The server reads three environment variables on first use:
 | `HOMEBOX_PASSWORD` | Homebox account password |
 
 Homebox uses session-based auth: the server logs in on first request and
-auto-refreshes on 401. There is no static API-token surface in Homebox v0.25.
+auto-refreshes on 401. There is no static API-token surface in Homebox v0.26.
 
 ## Wire-up with an MCP client
 
@@ -67,11 +68,11 @@ For Claude Desktop / Claude Code, add to `mcpServers` in your config:
 
 | Tool | Purpose |
 |---|---|
-| `list_items(location, labels, archived, page, page_size)` | List with filters |
+| `list_items(location, tags, archived, page, page_size)` | List with filters |
 | `get_item(item_id)` | Full detail for one item |
 | `get_item_by_asset_id(asset_id)` | Lookup by `000-142`-style asset ID |
 | `search_items(query, page, page_size)` | Free-text search |
-| `create_item(name, location_id, ...)` | Create — body normalized |
+| `create_item(name, location_id, entity_type_id, ...)` | Create — body normalized |
 | `update_item(item_id, fields)` | Merge-and-PUT — body normalized |
 | `delete_item(item_id)` | Permanent delete |
 
@@ -79,9 +80,15 @@ For Claude Desktop / Claude Code, add to `mcpServers` in your config:
 
 `list_locations`, `get_location`, `create_location`, `update_location`, `delete_location`
 
-### Labels
+### Tags
 
-`list_labels`, `get_label`, `create_label`, `update_label`, `delete_label`
+`list_tags`, `get_tag`, `get_or_create_tag_by_name`, `create_tag`, `update_tag`, `delete_tag`
+
+Legacy `list_labels` / `create_label` aliases are kept for older MCP clients.
+
+### Entity Types
+
+`list_entity_types`
 
 ### Attachments
 
@@ -89,6 +96,7 @@ For Claude Desktop / Claude Code, add to `mcpServers` in your config:
 |---|---|
 | `list_attachments(item_id)` | Returns the item's attachments list |
 | `upload_attachment(item_id, filename, attachment_type, content_base64\|content_url)` | Upload a file. `attachment_type` is one of `attachment`/`photo`/`manual`/`receipt`. Caller specifies — no extension-based inference. |
+| `create_external_attachment(item_id, external_id, source_type, title, attachment_type)` | Link an external document or URL without uploading file bytes. |
 | `delete_attachment(item_id, attachment_id)` | Delete one attachment |
 | `set_primary_image(item_id, attachment_id)` | Mark an existing attachment as the item's primary image |
 
@@ -104,17 +112,18 @@ end-to-end without leaving the MCP surface — pair the returned PNG with
 whatever label printer your agent can reach (CUPS / `lpr`, a printer-specific
 MCP, etc.).
 
-## The v0.25 silent-PUT trap
+## The v0.26 entity schema
 
-Homebox v0.25 silently drops PUT body fields whose name or format doesn't
+Homebox silently drops PUT body fields whose name or format doesn't
 match the schema, which makes "the request returned 200 but my change didn't
 persist" a real failure mode. This server bakes the workarounds into one
 normalizer:
 
 * `tagIds` field name (not `tags`) — though `tags` is auto-renamed if the
   values are UUIDs
-* `purchaseTime` (and other `*Time` / `*Date` fields) must be `YYYY-MM-DD`,
+* `purchaseDate`, `soldDate`, and `warrantyExpires` must be `YYYY-MM-DD`,
   not RFC3339 — RFC3339 strings are truncated automatically
+* legacy `purchaseTime` / `soldTime` inputs are translated to v0.26 field names
 * `0001-01-01T00:00:00Z` zero-date sentinels are converted to empty string
 
 See `src/homebox_mcp/normalizer.py` for the full rule set.

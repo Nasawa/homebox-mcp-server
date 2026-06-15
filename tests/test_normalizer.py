@@ -1,4 +1,4 @@
-"""Tests for the Homebox v0.25 body-shape normalizer."""
+"""Tests for the Homebox v0.26 body-shape normalizer."""
 
 from __future__ import annotations
 
@@ -32,11 +32,13 @@ class TestCoerceDate:
 class TestNormalizeItemBody:
     def test_purchase_time_rfc3339_truncates(self) -> None:
         out = normalize_item_body({"purchaseTime": "2026-05-10T18:47:00Z"})
-        assert out["purchaseTime"] == "2026-05-10"
+        assert out["purchaseDate"] == "2026-05-10"
+        assert "purchaseTime" not in out
 
     def test_purchase_time_zero_date_clears(self) -> None:
         out = normalize_item_body({"purchaseTime": "0001-01-01T00:00:00Z"})
-        assert out["purchaseTime"] == ""
+        assert out["purchaseDate"] == ""
+        assert "purchaseTime" not in out
 
     def test_tags_with_uuids_become_tagIds(self) -> None:
         uuid1 = "11111111-1111-1111-1111-111111111111"
@@ -49,12 +51,14 @@ class TestNormalizeItemBody:
         # Homebox GET response shape: list of {id, name, ...} dicts.
         uuid1 = "11111111-1111-1111-1111-111111111111"
         uuid2 = "22222222-2222-2222-2222-222222222222"
-        out = normalize_item_body({
-            "tags": [
-                {"id": uuid1, "name": "role:component"},
-                {"id": uuid2, "name": "function:sensor"},
-            ],
-        })
+        out = normalize_item_body(
+            {
+                "tags": [
+                    {"id": uuid1, "name": "role:component"},
+                    {"id": uuid2, "name": "function:sensor"},
+                ],
+            }
+        )
         assert "tags" not in out
         assert out["tagIds"] == [uuid1, uuid2]
 
@@ -72,7 +76,7 @@ class TestNormalizeItemBody:
         assert out["tagIds"] == [uuid_existing]
 
     def test_legacy_labelIds_renamed_to_tagIds(self) -> None:
-        # Pre-v0.25 callers may still pass labelIds; we silently translate.
+        # Legacy callers may still pass labelIds; we silently translate.
         uuid1 = "55555555-5555-5555-5555-555555555555"
         out = normalize_item_body({"labelIds": [uuid1]})
         assert "labelIds" not in out
@@ -88,11 +92,13 @@ class TestNormalizeItemBody:
 
     def test_other_date_fields_coerced(self) -> None:
         out = normalize_item_body({"warrantyExpireDate": "2027-01-01T00:00:00Z", "soldTime": "0001-01-01T00:00:00Z"})
-        assert out["warrantyExpireDate"] == "2027-01-01"
-        assert out["soldTime"] == ""
+        assert out["warrantyExpires"] == "2027-01-01"
+        assert out["soldDate"] == ""
+        assert "warrantyExpireDate" not in out
+        assert "soldTime" not in out
 
     def test_unrelated_fields_passthrough(self) -> None:
-        body = {"name": "Foo", "quantity": 3, "purchasePrice": 12.34, "purchaseTime": "2026-05-10"}
+        body = {"name": "Foo", "quantity": 3, "purchasePrice": 12.34, "purchaseDate": "2026-05-10"}
         assert normalize_item_body(body) == body
 
     def test_input_not_mutated(self) -> None:
